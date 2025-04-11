@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -188,12 +190,22 @@ func (e *OutlineExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.scrapeDurationSeconds.Describe(ch)
 }
 
-func (e *OutlineExporter) fetchData(path string, target interface{}) error {
+func (e *OutlineExporter) fetchData(path string, target interface{}, bodyData interface{}) error {
 	client := &http.Client{
 		Timeout: e.config.ScrapeTimeout,
 	}
 
-	req, err := http.NewRequest("POST", e.config.OutlineAPIURL+path, nil)
+	var body io.Reader
+	if bodyData != nil {
+		bodyBytes, err := json.Marshal(bodyData)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewBuffer(bodyBytes)
+	}
+
+	req, err := http.NewRequest("POST", e.config.OutlineAPIURL+path, body)
+
 	if err != nil {
 		return err
 	}
@@ -222,21 +234,23 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 	var users UsersResponse
 	var success bool = true
 
-	err := e.fetchData("/api/collections.list", &collections)
+	limitRequest := map[string]int{"limit": 100}
+
+	err := e.fetchData("/api/collections.list", &collections, limitRequest)
 	if err != nil {
 		log.Printf("Error fetching collections: %v", err)
 		e.scrapeErrorsTotal.Inc()
 		success = false
 	}
 
-	err = e.fetchData("/api/documents.list", &documents)
+	err = e.fetchData("/api/documents.list", &documents, limitRequest)
 	if err != nil {
 		log.Printf("Error fetching documents: %v", err)
 		e.scrapeErrorsTotal.Inc()
 		success = false
 	}
 
-	err = e.fetchData("/api/users.list", &users)
+	err = e.fetchData("/api/users.list", &users, limitRequest)
 	if err != nil {
 		log.Printf("Error fetching users: %v", err)
 		e.scrapeErrorsTotal.Inc()
@@ -273,7 +287,6 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(e.documentsTotal, prometheus.GaugeValue, float64(len(documents.Data)))
 
 	for _, doc := range documents.Data {
-
 		ch <- prometheus.MustNewConstMetric(
 			e.documentRevisions,
 			prometheus.GaugeValue,
