@@ -72,24 +72,29 @@ jobs:
         runs-on: ubuntu-24.04
         permissions:
             contents: write
+
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
 
             - name: Set up GitHub CLI
-              uses: cli/cli-action@v1
+              uses: actions/setup-node@v3
+              with:
+                  node-version: 22
 
             - name: Create Release
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   version="${{ needs.get-version.outputs.version }}"
-                  if ! gh release create "v$version" \
+
+                  if ! gh release create "$version" \
                     --repo="${{ github.repository }}" \
-                    --title="v$version" \
+                    --title="$version" \
                     --generate-notes; then
-                    if gh release view "v$version" --repo ${{ github.repository }} &>/dev/null; then
-                      echo "Release v$version already exists, treating as success"
+                    
+                    if gh release view "$version" --repo ${{ github.repository }} &>/dev/null; then
+                      echo "Release $version already exists, treating as success"
                       exit 0
                     else
                       echo "Failed to create release and release doesn't exist"
