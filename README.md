@@ -29,6 +29,7 @@ Set these environment variables:
 | `LISTEN_ADDRESS`  | Address for the exporter to listen on | `:9877`                 |
 | `METRICS_PATH`    | Path to access metrics                | `/metrics`              |
 | `SCRAPE_TIMEOUT`  | Timeout for API requests              | `5s`                    |
+| `DEBUG`           | Enable debug logging                  | `false`                 |
 
 ## Complete List of Metrics
 
