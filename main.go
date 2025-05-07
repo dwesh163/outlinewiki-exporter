@@ -26,14 +26,19 @@ type Config struct {
 	Debug         bool
 }
 
+// Collection struct aligned with Outline API response
+// Ref: https://www.getoutline.com/developers#tag/collections/POST/collections.list
 type Collection struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
+	// DocumentsCount removed as it's not returned by the API
 }
 
+// Document struct aligned with Outline API response
+// Ref: https://www.getoutline.com/developers#tag/documents/POST/documents.list
 type Document struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
@@ -43,8 +48,8 @@ type Document struct {
 	PublishedAt  time.Time `json:"publishedAt"`
 	ArchivedAt   time.Time `json:"archivedAt,omitempty"`
 	DeletedAt    time.Time `json:"deletedAt,omitempty"`
-	Views        int       `json:"views"`
-	Revision     int       `json:"revision"`
+	Views        int       `json:"views"`    // Changed from ViewCount as per API
+	Revision     int       `json:"revision"` // Changed from RevisionCount as per API
 	CollectionId string    `json:"collectionId"`
 }
 
@@ -95,9 +100,8 @@ type OutlineExporter struct {
 	documentSize      *prometheus.Desc
 	documentUpdateAge *prometheus.Desc
 
-	usersTotal     *prometheus.Desc
-	userLastActive *prometheus.Desc
-	userAge        *prometheus.Desc
+	usersTotal *prometheus.Desc
+	// Metrics userLastActive and userAge sont supprimées de la structure mais sont toujours collectées
 }
 
 func NewOutlineExporter(config Config) *OutlineExporter {
@@ -174,15 +178,7 @@ func NewOutlineExporter(config Config) *OutlineExporter {
 			"Total number of users",
 			nil, nil),
 
-		userLastActive: prometheus.NewDesc(
-			"outline_user_last_active_seconds",
-			"Time since user was last active in seconds",
-			[]string{"user_id", "user_name"}, nil),
-
-		userAge: prometheus.NewDesc(
-			"outline_user_age_seconds",
-			"Age of user account in seconds",
-			[]string{"user_id", "user_name"}, nil),
+		// Les métriques userLastActive et userAge sont complètement supprimées
 	}
 }
 
@@ -199,28 +195,32 @@ func (e *OutlineExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.documentSize
 	ch <- e.documentUpdateAge
 	ch <- e.usersTotal
-	ch <- e.userLastActive
-	ch <- e.userAge
+	// Les métriques userLastActive et userAge sont supprimées de Describe()
 
 	e.scrapeErrorsTotal.Describe(ch)
 	e.scrapeDurationSeconds.Describe(ch)
 }
 
+// Debug logging helper
 func (e *OutlineExporter) debugLog(format string, v ...interface{}) {
 	if e.config.Debug {
 		log.Printf("[DEBUG] "+format, v...)
 	}
 }
 
+// fetchPage is a general purpose method to fetch data from the Outline API
+// Always uses POST as per Outline API requirements, with optional request body
 func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData interface{}) error {
 	client := &http.Client{
 		Timeout: e.config.ScrapeTimeout,
 	}
 
+	// Always use POST method as per Outline API docs
 	method := "POST"
 	fullURL := e.config.OutlineAPIURL + path
 	e.debugLog("Making %s request to: %s", method, fullURL)
 
+	// Prepare request body if provided
 	var body io.Reader
 	if bodyData != nil {
 		bodyBytes, err := json.Marshal(bodyData)
@@ -240,6 +240,7 @@ func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData in
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
+	// Dump request for debugging if enabled
 	if e.config.Debug {
 		reqDump, err := httputil.DumpRequestOut(req, true)
 		if err != nil {
@@ -255,6 +256,7 @@ func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData in
 	}
 	defer resp.Body.Close()
 
+	// Dump response for debugging if enabled
 	if e.config.Debug {
 		respDump, err := httputil.DumpResponse(resp, true)
 		if err != nil {
@@ -264,6 +266,7 @@ func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData in
 		}
 	}
 
+	// Read the full response body for error reporting and parsing
 	bodyContent, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("error reading response body: %w", err)
@@ -273,6 +276,7 @@ func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData in
 		return fmt.Errorf("API returned status code %d: %s", resp.StatusCode, string(bodyContent))
 	}
 
+	// Parse the JSON response
 	err = json.Unmarshal(bodyContent, target)
 	if err != nil {
 		return fmt.Errorf("error parsing response: %w", err)
@@ -281,6 +285,7 @@ func (e *OutlineExporter) fetchPage(path string, target interface{}, bodyData in
 	return nil
 }
 
+// Helper function to check if the pagination data should be used
 func (e *OutlineExporter) shouldPaginate(paginationData Pagination, itemCount int) bool {
 	hasNextPath := paginationData.NextPath != ""
 	nonEmptyPath := strings.TrimSpace(paginationData.NextPath) != ""
@@ -292,37 +297,46 @@ func (e *OutlineExporter) shouldPaginate(paginationData Pagination, itemCount in
 	e.debugLog("  - Got exact limit: %v (got %d, limit was %d)", exactLimit, itemCount, paginationData.Limit)
 	e.debugLog("  - Should paginate: %v", hasNextPath && nonEmptyPath && exactLimit)
 
+	// Only paginate if all conditions are met
 	return hasNextPath && nonEmptyPath && exactLimit
 }
 
+// fetchAllCollections fetches all collections via Outline API
+// Reference: https://www.getoutline.com/developers#tag/collections/POST/collections.list
 func (e *OutlineExporter) fetchAllCollections() ([]Collection, error) {
 	var allCollections []Collection
 	path := "/api/collections.list"
 
 	e.debugLog("Starting collection fetch with path: %s", path)
 
+	// Initial request body with pagination parameters
 	requestBody := map[string]int{
 		"limit":  e.config.PageLimit,
 		"offset": 0,
 	}
 
+	// Initial request
 	var initialResponse CollectionsResponse
 	err := e.fetchPage(path, &initialResponse, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching initial page of collections: %w", err)
 	}
 
+	// Add the collections from the first page
 	allCollections = append(allCollections, initialResponse.Data...)
 	log.Printf("Fetched %d collections in first page", len(initialResponse.Data))
 
+	// Dump full pagination data for debugging
 	paginationBytes, _ := json.MarshalIndent(initialResponse.Pagination, "", "  ")
 	e.debugLog("Initial pagination data: %s", string(paginationBytes))
 
+	// Determine if we need pagination
 	if !e.shouldPaginate(initialResponse.Pagination, len(initialResponse.Data)) {
 		log.Printf("No more collections to fetch (total: %d)", len(allCollections))
 		return allCollections, nil
 	}
 
+	// Follow pagination to get remaining pages
 	pageCount := 1
 	nextPath := initialResponse.Pagination.NextPath
 
@@ -330,13 +344,15 @@ func (e *OutlineExporter) fetchAllCollections() ([]Collection, error) {
 		e.debugLog("Following nextPath: %s", nextPath)
 
 		var response CollectionsResponse
-
+		// For pagination requests, we still need to use POST but with empty body
+		// as per Outline API requirements
 		err := e.fetchPage(nextPath, &response, map[string]string{})
 		if err != nil {
-
+			// Return what we have so far with the error
 			return allCollections, fmt.Errorf("error fetching page %d of collections: %w", pageCount+1, err)
 		}
 
+		// Dump pagination data for this page
 		paginationBytes, _ := json.MarshalIndent(response.Pagination, "", "  ")
 		e.debugLog("Page %d pagination data: %s", pageCount+1, string(paginationBytes))
 
@@ -345,6 +361,7 @@ func (e *OutlineExporter) fetchAllCollections() ([]Collection, error) {
 		log.Printf("Fetched %d collections in page %d, %d total so far",
 			len(response.Data), pageCount, len(allCollections))
 
+		// Only continue if we should paginate
 		if !e.shouldPaginate(response.Pagination, len(response.Data)) {
 			e.debugLog("Stopping pagination after page %d", pageCount)
 			break
@@ -356,34 +373,42 @@ func (e *OutlineExporter) fetchAllCollections() ([]Collection, error) {
 	return allCollections, nil
 }
 
+// fetchAllDocuments fetches all documents via Outline API
+// Reference: https://www.getoutline.com/developers#tag/documents/POST/documents.list
 func (e *OutlineExporter) fetchAllDocuments() ([]Document, error) {
 	var allDocuments []Document
 	path := "/api/documents.list"
 
 	e.debugLog("Starting documents fetch with path: %s", path)
 
+	// Initial request body with pagination parameters
 	requestBody := map[string]int{
 		"limit":  e.config.PageLimit,
 		"offset": 0,
 	}
 
+	// Initial request
 	var initialResponse DocumentsResponse
 	err := e.fetchPage(path, &initialResponse, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching initial page of documents: %w", err)
 	}
 
+	// Add the documents from the first page
 	allDocuments = append(allDocuments, initialResponse.Data...)
 	log.Printf("Fetched %d documents in first page", len(initialResponse.Data))
 
+	// Dump full pagination data for debugging
 	paginationBytes, _ := json.MarshalIndent(initialResponse.Pagination, "", "  ")
 	e.debugLog("Initial pagination data: %s", string(paginationBytes))
 
+	// Determine if we need pagination
 	if !e.shouldPaginate(initialResponse.Pagination, len(initialResponse.Data)) {
 		log.Printf("No more documents to fetch (total: %d)", len(allDocuments))
 		return allDocuments, nil
 	}
 
+	// Follow pagination to get remaining pages
 	pageCount := 1
 	nextPath := initialResponse.Pagination.NextPath
 
@@ -391,13 +416,14 @@ func (e *OutlineExporter) fetchAllDocuments() ([]Document, error) {
 		e.debugLog("Following nextPath: %s", nextPath)
 
 		var response DocumentsResponse
-
+		// For pagination requests, we still need to use POST but with empty body
 		err := e.fetchPage(nextPath, &response, map[string]string{})
 		if err != nil {
-
+			// Return what we have so far with the error
 			return allDocuments, fmt.Errorf("error fetching page %d of documents: %w", pageCount+1, err)
 		}
 
+		// Dump pagination data for this page
 		paginationBytes, _ := json.MarshalIndent(response.Pagination, "", "  ")
 		e.debugLog("Page %d pagination data: %s", pageCount+1, string(paginationBytes))
 
@@ -406,6 +432,7 @@ func (e *OutlineExporter) fetchAllDocuments() ([]Document, error) {
 		log.Printf("Fetched %d documents in page %d, %d total so far",
 			len(response.Data), pageCount, len(allDocuments))
 
+		// Only continue if we should paginate
 		if !e.shouldPaginate(response.Pagination, len(response.Data)) {
 			e.debugLog("Stopping pagination after page %d", pageCount)
 			break
@@ -417,34 +444,41 @@ func (e *OutlineExporter) fetchAllDocuments() ([]Document, error) {
 	return allDocuments, nil
 }
 
+// fetchAllUsers fetches all users via Outline API
 func (e *OutlineExporter) fetchAllUsers() ([]User, error) {
 	var allUsers []User
 	path := "/api/users.list"
 
 	e.debugLog("Starting users fetch with path: %s", path)
 
+	// Initial request body with pagination parameters
 	requestBody := map[string]int{
 		"limit":  e.config.PageLimit,
 		"offset": 0,
 	}
 
+	// Initial request
 	var initialResponse UsersResponse
 	err := e.fetchPage(path, &initialResponse, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching initial page of users: %w", err)
 	}
 
+	// Add the users from the first page
 	allUsers = append(allUsers, initialResponse.Data...)
 	log.Printf("Fetched %d users in first page", len(initialResponse.Data))
 
+	// Dump full pagination data for debugging
 	paginationBytes, _ := json.MarshalIndent(initialResponse.Pagination, "", "  ")
 	e.debugLog("Initial pagination data: %s", string(paginationBytes))
 
+	// Determine if we need pagination
 	if !e.shouldPaginate(initialResponse.Pagination, len(initialResponse.Data)) {
 		log.Printf("No more users to fetch (total: %d)", len(allUsers))
 		return allUsers, nil
 	}
 
+	// Follow pagination to get remaining pages
 	pageCount := 1
 	nextPath := initialResponse.Pagination.NextPath
 
@@ -452,13 +486,14 @@ func (e *OutlineExporter) fetchAllUsers() ([]User, error) {
 		e.debugLog("Following nextPath: %s", nextPath)
 
 		var response UsersResponse
-
+		// For pagination requests, we still need to use POST but with empty body
 		err := e.fetchPage(nextPath, &response, map[string]string{})
 		if err != nil {
-
+			// Return what we have so far with the error
 			return allUsers, fmt.Errorf("error fetching page %d of users: %w", pageCount+1, err)
 		}
 
+		// Dump pagination data for this page
 		paginationBytes, _ := json.MarshalIndent(response.Pagination, "", "  ")
 		e.debugLog("Page %d pagination data: %s", pageCount+1, string(paginationBytes))
 
@@ -467,6 +502,7 @@ func (e *OutlineExporter) fetchAllUsers() ([]User, error) {
 		log.Printf("Fetched %d users in page %d, %d total so far",
 			len(response.Data), pageCount, len(allUsers))
 
+		// Only continue if we should paginate
 		if !e.shouldPaginate(response.Pagination, len(response.Data)) {
 			e.debugLog("Stopping pagination after page %d", pageCount)
 			break
@@ -478,10 +514,12 @@ func (e *OutlineExporter) fetchAllUsers() ([]User, error) {
 	return allUsers, nil
 }
 
+// Collect implements the prometheus.Collector interface
 func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 	startTime := time.Now()
 	var success bool = true
 
+	// Fetch all collections using pagination
 	collections, err := e.fetchAllCollections()
 	if err != nil {
 		log.Printf("Error fetching collections: %v", err)
@@ -489,6 +527,7 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 		success = false
 	}
 
+	// Fetch all documents using pagination
 	documents, err := e.fetchAllDocuments()
 	if err != nil {
 		log.Printf("Error fetching documents: %v", err)
@@ -496,6 +535,7 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 		success = false
 	}
 
+	// Fetch all users using pagination
 	users, err := e.fetchAllUsers()
 	if err != nil {
 		log.Printf("Error fetching users: %v", err)
@@ -510,23 +550,27 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, 0)
 	}
 
+	// Export collections metrics if we have data
 	if len(collections) > 0 {
 		ch <- prometheus.MustNewConstMetric(e.collectionsTotal, prometheus.GaugeValue, float64(len(collections)))
 
+		// Calculate document counts per collection by processing all documents
 		collectionDocCounts := make(map[string]int)
 
+		// Count documents per collection by iterating through documents
 		for _, doc := range documents {
 			collectionDocCounts[doc.CollectionId]++
 		}
 
+		// Now export metrics for each collection
 		for _, collection := range collections {
-
+			// Get document count for this collection
 			docCount := collectionDocCounts[collection.ID]
 
 			ch <- prometheus.MustNewConstMetric(
 				e.collectionDocumentsCount,
 				prometheus.GaugeValue,
-				float64(docCount),
+				float64(docCount), // Use the calculated count
 				collection.ID,
 				collection.Name,
 			)
@@ -543,6 +587,7 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 		log.Printf("No collections data to export")
 	}
 
+	// Export documents metrics if we have data
 	if len(documents) > 0 {
 		ch <- prometheus.MustNewConstMetric(e.documentsTotal, prometheus.GaugeValue, float64(len(documents)))
 
@@ -550,7 +595,7 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(
 				e.documentRevisions,
 				prometheus.GaugeValue,
-				float64(doc.Revision),
+				float64(doc.Revision), // Changed from RevisionCount to Revision as per API
 				doc.ID,
 				doc.CollectionId,
 			)
@@ -558,7 +603,7 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(
 				e.documentViews,
 				prometheus.GaugeValue,
-				float64(doc.Views),
+				float64(doc.Views), // Changed from ViewCount to Views as per API
 				doc.ID,
 				doc.CollectionId,
 			)
@@ -591,26 +636,12 @@ func (e *OutlineExporter) Collect(ch chan<- prometheus.Metric) {
 		log.Printf("No documents data to export")
 	}
 
+	// Export users metrics if we have data
 	if len(users) > 0 {
 		ch <- prometheus.MustNewConstMetric(e.usersTotal, prometheus.GaugeValue, float64(len(users)))
 
-		for _, user := range users {
-			ch <- prometheus.MustNewConstMetric(
-				e.userLastActive,
-				prometheus.GaugeValue,
-				time.Since(user.LastActiveAt).Seconds(),
-				user.ID,
-				user.Name,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				e.userAge,
-				prometheus.GaugeValue,
-				time.Since(user.CreatedAt).Seconds(),
-				user.ID,
-				user.Name,
-			)
-		}
+		// Les métriques userLastActive et userAge sont complètement supprimées de Collect()
+		// Nous continuons à collecter les données users mais nous n'exportons pas les métriques détaillées par utilisateur
 	} else {
 		log.Printf("No users data to export")
 	}
@@ -657,6 +688,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(config.ListenAddress, nil))
 }
 
+// Helper functions for environment variables
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
