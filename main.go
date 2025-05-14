@@ -670,6 +670,10 @@ func main() {
 	prometheus.MustRegister(exporter)
 
 	http.Handle(config.MetricsPath, promhttp.Handler())
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 			<head><title>Outline Wiki Exporter</title></head>
