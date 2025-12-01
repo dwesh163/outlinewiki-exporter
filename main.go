@@ -378,7 +378,7 @@ func main() {
 		ListenAddress: getEnv("LISTEN_ADDRESS", ":9877"),
 		MetricsPath:   getEnv("METRICS_PATH", "/metrics"),
 		ScrapeTimeout: getDuration("SCRAPE_TIMEOUT", 10*time.Second),
-		PageLimit:     getInt("PAGE_LIMIT", 25),
+		PageLimit:     getInt("PAGE_LIMIT", 100),
 		Debug:         getBool("DEBUG", false),
 	}
 
