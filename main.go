@@ -83,6 +83,8 @@ type Exporter struct {
 	documentSize             *prometheus.Desc
 	documentUpdateAge        *prometheus.Desc
 	usersTotal               *prometheus.Desc
+	userLastActive           *prometheus.Desc
+	userAge                  *prometheus.Desc
 }
 
 func newExporter(config Config) *Exporter {
@@ -144,6 +146,14 @@ func newExporter(config Config) *Exporter {
 			"outline_users_total",
 			"Total number of users",
 			nil, nil),
+		userLastActive: prometheus.NewDesc(
+			"outline_user_last_active_seconds",
+			"Time since user was last active in seconds",
+			[]string{"user_id", "user_name"}, nil),
+		userAge: prometheus.NewDesc(
+			"outline_user_age_seconds",
+			"Age of user account in seconds",
+			[]string{"user_id", "user_name"}, nil),
 	}
 }
 
@@ -160,6 +170,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.documentSize
 	ch <- e.documentUpdateAge
 	ch <- e.usersTotal
+	ch <- e.userLastActive
+	ch <- e.userAge
 	e.scrapeErrorsTotal.Describe(ch)
 	e.scrapeDurationSeconds.Describe(ch)
 }
@@ -364,6 +376,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	if len(users) > 0 {
 		ch <- prometheus.MustNewConstMetric(e.usersTotal, prometheus.GaugeValue, float64(len(users)))
+
+		for _, user := range users {
+			ch <- prometheus.MustNewConstMetric(e.userLastActive, prometheus.GaugeValue,
+				time.Since(user.LastActiveAt).Seconds(), user.ID, user.Name)
+			ch <- prometheus.MustNewConstMetric(e.userAge, prometheus.GaugeValue,
+				time.Since(user.CreatedAt).Seconds(), user.ID, user.Name)
+		}
 	}
 
 	e.scrapeDurationSeconds.Set(time.Since(startTime).Seconds())
