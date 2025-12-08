@@ -183,6 +183,33 @@ func (e *Exporter) debug(format string, args ...any) {
 }
 
 func (e *Exporter) fetch(path string, target any, body any) error {
+	maxRetries := 3
+	baseDelay := time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("Retry %d/%d after %v for %s", attempt, maxRetries, delay, path)
+			time.Sleep(delay)
+		}
+
+		err := e.doFetch(path, target, body)
+		if err == nil {
+			return nil
+		}
+
+		if attempt < maxRetries && (strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "timeout")) {
+			e.debug("Retryable error: %v", err)
+			continue
+		}
+
+		return err
+	}
+
+	return fmt.Errorf("max retries exceeded")
+}
+
+func (e *Exporter) doFetch(path string, target any, body any) error {
 	client := &http.Client{Timeout: e.config.ScrapeTimeout}
 	fullURL := e.config.OutlineAPIURL + path
 	e.debug("POST %s", fullURL)
@@ -396,7 +423,7 @@ func main() {
 		OutlineAPIKey: getEnv("OUTLINE_API_KEY", ""),
 		ListenAddress: getEnv("LISTEN_ADDRESS", ":9877"),
 		MetricsPath:   getEnv("METRICS_PATH", "/metrics"),
-		ScrapeTimeout: getDuration("SCRAPE_TIMEOUT", 10*time.Second),
+		ScrapeTimeout: getDuration("SCRAPE_TIMEOUT", 30*time.Second),
 		PageLimit:     getInt("PAGE_LIMIT", 100),
 		Debug:         getBool("DEBUG", false),
 	}
